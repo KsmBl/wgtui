@@ -168,18 +168,47 @@ func (m *Model) applyPeers(i *store.Iface, ok string) tea.Cmd {
 	return m.op("applying to "+i.Name, func() error { return m.rt.Sync(i.Name, i.Path) }, ok+" (applied live)")
 }
 
-// restart re-applies firewall rules of a running interface.
-func (m *Model) restart(i *store.Iface, ok string) tea.Cmd {
+// restart re-applies the config of a running interface after an edit.
+// oldConf is the config the interface was started with: it is used to
+// take the interface down, so PostDown removes exactly the rules that
+// PostUp added. The interface is always started again, even if stopping
+// reported an error.
+func (m *Model) restart(i *store.Iface, oldConf []byte, ok string) tea.Cmd {
 	if !m.isUp(i) {
 		m.setOK(ok)
 		return nil
 	}
 	return m.op("restarting "+i.Name, func() error {
-		if err := m.rt.Down(i.Name, i.Path); err != nil {
+		downErr := m.downWith(i, oldConf)
+		if err := m.rt.Up(i.Name, i.Path); err != nil {
+			if downErr != nil {
+				return fmt.Errorf("restart of %s failed: stop: %v; start: %v", i.Name, downErr, err)
+			}
 			return err
 		}
-		return m.rt.Up(i.Name, i.Path)
+		if downErr != nil {
+			return fmt.Errorf("%s restarted, but stopping it reported: %v", i.Name, downErr)
+		}
+		return nil
 	}, ok+" ("+i.Name+" restarted)")
+}
+
+// downWith stops an interface using the given config content.
+func (m *Model) downWith(i *store.Iface, conf []byte) error {
+	if len(conf) == 0 {
+		return m.rt.Down(i.Name, i.Path)
+	}
+	dir, err := os.MkdirTemp("", "wgtui-old-")
+	if err != nil {
+		return m.rt.Down(i.Name, i.Path)
+	}
+	defer os.RemoveAll(dir)
+	// wg-quick takes the interface name from the file name.
+	p := filepath.Join(dir, i.Name+".conf")
+	if err := os.WriteFile(p, conf, 0o600); err != nil {
+		return m.rt.Down(i.Name, i.Path)
+	}
+	return m.rt.Down(i.Name, p)
 }
 
 // Update handles messages.
@@ -496,10 +525,11 @@ func (m *Model) networkForm(existing *store.Iface) tea.Cmd {
 			DNS: v["dns"], Mode: v["mode"], FullTunnel: v["full"] == "yes", OutIface: v["out"], Keepalive: ka}
 		if existing != nil {
 			no.Name = existing.Name
+			oldConf, _ := os.ReadFile(existing.Path)
 			if err := existing.UpdateNetwork(no); err != nil {
 				return nil, err
 			}
-			return m.restart(existing, "saved "+existing.Name), nil
+			return m.restart(existing, oldConf, "saved "+existing.Name), nil
 		}
 		i, err := m.store.CreateNetwork(no)
 		if err != nil {
@@ -550,10 +580,11 @@ func (m *Model) connectionForm(existing *store.Iface) tea.Cmd {
 			if no.PrivateKey == "" {
 				no.PrivateKey = existing.File.Interface.Get("PrivateKey")
 			}
+			oldConf, _ := os.ReadFile(existing.Path)
 			if err := existing.UpdateConnection(no); err != nil {
 				return nil, err
 			}
-			return m.restart(existing, "saved "+existing.Name), nil
+			return m.restart(existing, oldConf, "saved "+existing.Name), nil
 		}
 		i, err := m.store.CreateConnection(no)
 		if err != nil {

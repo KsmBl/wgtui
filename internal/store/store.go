@@ -277,7 +277,9 @@ func (i *Iface) managedRules() []wgconf.KV {
 		out = append(out, wgconf.KV{Key: "PostUp", Value: fmt.Sprintf(r, "-I")})
 	}
 	for _, r := range up {
-		out = append(out, wgconf.KV{Key: "PostDown", Value: fmt.Sprintf(r, "-D")})
+		// "|| true": a missing rule must never make wg-quick down fail,
+		// otherwise the interface is removed but the restart aborts.
+		out = append(out, wgconf.KV{Key: "PostDown", Value: fmt.Sprintf(r, "-D") + " || true"})
 	}
 	return out
 }
