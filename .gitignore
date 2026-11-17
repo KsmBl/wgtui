@@ -1,0 +1,4 @@
+wgtui
+dist/
+.shots/
+*.wgtui.tmp
